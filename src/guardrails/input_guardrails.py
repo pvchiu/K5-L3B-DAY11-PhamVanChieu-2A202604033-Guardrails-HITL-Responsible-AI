@@ -11,7 +11,13 @@ Status convention (không dùng True/False mơ hồ):
 from __future__ import annotations
 
 import re
+import sys
+from pathlib import Path
 from typing import Literal
+
+_SRC_DIR = Path(__file__).resolve().parent.parent
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
 
 from google.genai import types
 from google.adk.plugins import base_plugin
@@ -51,14 +57,28 @@ def detect_injection(user_input: str) -> InputStatus:
     Returns:
         ``"BLOCK"`` if injection detected (chặn), ``"ALLOW"`` otherwise (cho qua).
     """
+    if not user_input:
+        return "BLOCK"
+
+    # Canonicalize Unicode, invisible spacing, zero-width chars
+    normalized = re.sub(r"[\u200b-\u200f\uFEFF\u202a-\u202e\u0000-\u001f]", "", user_input)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+
     INJECTION_PATTERNS = [
-        # TODO: Add at least 5 regex patterns
-        # Example:
-        # r"ignore (all )?(previous|above) instructions",
+        r"ignore\s+(all\s+)?(previous|above|prior)\s+instructions",
+        r"disregard\s+(all\s+)?(previous|above|prior)\b",
+        r"you\s+are\s+now\b",
+        r"system\s+prompt\b",
+        r"reveal\s+(your\s+|the\s+)?(instructions|prompt|system\s+prompt|password|secret)",
+        r"pretend\s+(you\s+are|to\s+be)\b",
+        r"act\s+as\s+(a\s+|an\s+)?unrestricted\b",
+        r"\bDAN\b",
+        r"jailbreak\b",
+        r"(show|display|reveal|print|output|give\s+me)\s+(me\s+)?(your\s+|the\s+)?(admin\s+password|internal\s+password|api\s*key|database\s+host|secret)",
     ]
 
     for pattern in INJECTION_PATTERNS:
-        if re.search(pattern, user_input, re.IGNORECASE):
+        if re.search(pattern, normalized, re.IGNORECASE):
             return "BLOCK"
     return "ALLOW"
 
@@ -84,14 +104,28 @@ def topic_filter(user_input: str) -> InputStatus:
         ``"BLOCK"`` = chặn (off-topic hoặc topic cấm).
         ``"ALLOW"`` = cho qua (câu banking hợp lệ).
     """
+    if not user_input or not user_input.strip():
+        return "BLOCK"
+
     input_lower = user_input.lower()
 
-    # TODO: Implement logic:
     # 1. If input contains any blocked topic -> return "BLOCK"
-    # 2. If input doesn't contain any allowed topic -> return "BLOCK"
-    # 3. Otherwise -> return "ALLOW"
+    for blocked in BLOCKED_TOPICS:
+        if re.search(r"\b" + re.escape(blocked) + r"\b", input_lower):
+            return "BLOCK"
 
-    pass  # Replace with your implementation
+    # 2. If input doesn't contain any allowed topic -> return "BLOCK"
+    has_allowed = False
+    for allowed in ALLOWED_TOPICS:
+        if allowed in input_lower:
+            has_allowed = True
+            break
+
+    if not has_allowed:
+        return "BLOCK"
+
+    # 3. Otherwise -> return "ALLOW"
+    return "ALLOW"
 
 
 # ============================================================
@@ -144,14 +178,25 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         self.total_count += 1
         text = self._extract_text(user_message)
 
-        # TODO: Implement logic:
-        # 1. Call detect_injection(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 2. Call topic_filter(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 3. If both return "ALLOW": return None (let message through)
+        if not text or not text.strip():
+            self.blocked_count += 1
+            return self._block_response(
+                "I cannot process an empty request. I only help with VinBank banking questions."
+            )
 
-        pass  # Replace with your implementation
+        if detect_injection(text) == "BLOCK":
+            self.blocked_count += 1
+            return self._block_response(
+                "I cannot process that request. I only help with VinBank banking questions."
+            )
+
+        if topic_filter(text) == "BLOCK":
+            self.blocked_count += 1
+            return self._block_response(
+                "I can only help with banking-related questions. How may I assist you with VinBank services?"
+            )
+
+        return None
 
 
 # ============================================================
